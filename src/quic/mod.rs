@@ -12,8 +12,8 @@ const QUIC_HP: [u8; 17] = hex!("00100d746c733133207175696320687000");
 
 #[derive(Debug)]
 pub struct QuicPayload {
-    pub frame_type: u8,
-    pub offset: u8,
+    pub frame_type: u64,
+    pub offset: usize,
     pub length: usize,
     pub decoded_data: Vec<u8>,
 }
@@ -62,7 +62,6 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
 
     let header = data.get_mut(0..offset)?;
     let mut mask_i = 1;
-    println!("{:?}", (offset - packet_number_len)..offset);
     for i in (offset - packet_number_len)..offset {
         header[i] ^= mask[mask_i];
         mask_i += 1;
@@ -79,15 +78,21 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
         .decrypt_in_place(&quic_hp_iv.try_into().ok()?, &header, &mut packet_data)
         .unwrap();
 
-    let frame_type = packet_data[0];
-    let offset = packet_data[1];
-    let length = (u16::from_be_bytes([packet_data[2], packet_data[3]]) & 0x0fff) as usize;
+    let mut packet_offset = 0;
+    let (frame_type, len) = read_variable_length_int(&packet_data[packet_offset..]);
+    packet_offset += len;
 
-    packet_data.drain(0..4);
+    let (offset, len) = read_variable_length_int(&packet_data[packet_offset..]);
+    packet_offset += len;
+
+    let (length, len) = read_variable_length_int(&packet_data[packet_offset..]);
+    packet_offset += len;
+
+    packet_data.drain(0..packet_offset);
     Some(QuicPayload {
         frame_type,
-        offset,
-        length,
+        offset: offset as usize,
+        length: length as usize,
         decoded_data: packet_data,
     })
 }
