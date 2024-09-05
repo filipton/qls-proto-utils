@@ -29,11 +29,12 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     let src_conn_len = *data.get(offset)? as usize;
     offset += src_conn_len + 1;
 
-    let token_len = *data.get(offset)? as usize;
-    offset += token_len + 1;
+    let (token_len, len) = read_variable_length_int(&data[offset..]);
+    offset += token_len as usize + len;
 
-    //let payload_len = u16::from_be_bytes([*data.get(offset)?, *data.get(offset + 1)?]) & 0x0fff;
-    offset += 2;
+    let (payload_len, len) = read_variable_length_int(&data[offset..]);
+    println!("payload_len: {payload_len}, len: {len}");
+    offset += len;
 
     let hk = Hkdf::<Sha256>::new(Some(&INITIAL_SALT), &dcid);
     let mut client_initial_secret = [0; 32];
@@ -76,11 +77,12 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     let mut cipher = Aes128Gcm::new_from_slice(&quic_hp_key).ok()?;
     cipher
         .decrypt_in_place(&quic_hp_iv.try_into().ok()?, &header, &mut packet_data)
-        .ok()?;
+        .unwrap();
 
     let frame_type = packet_data[0];
     let offset = packet_data[1];
     let length = (u16::from_be_bytes([packet_data[2], packet_data[3]]) & 0x0fff) as usize;
+    println!("frame_type: {frame_type:02X}, offset: {offset}, length: {length}");
 
     packet_data.drain(0..4);
     Some(QuicPayload {
@@ -89,4 +91,21 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
         length,
         decoded_data: packet_data,
     })
+}
+
+fn read_variable_length_int(data: &[u8]) -> (u64, usize) {
+    let two_msb = data[0] & 0b11000000;
+    let len: usize = match two_msb {
+        0b00000000 => 1,
+        0b01000000 => 2,
+        0b10000000 => 4,
+        0b11000000 => 8,
+        _ => 0,
+    };
+
+    let mut tmp = [0; 8];
+    tmp[(8 - len)..8].copy_from_slice(&data[..len]);
+    tmp[8 - len] &= 0b00111111;
+
+    (u64::from_be_bytes(tmp), len)
 }
