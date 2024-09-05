@@ -32,8 +32,7 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     let (token_len, len) = read_variable_length_int(&data[offset..]);
     offset += token_len as usize + len;
 
-    let (payload_len, len) = read_variable_length_int(&data[offset..]);
-    println!("payload_len: {payload_len}, len: {len}");
+    let (_, len) = read_variable_length_int(&data[offset..]);
     offset += len;
 
     let hk = Hkdf::<Sha256>::new(Some(&INITIAL_SALT), &dcid);
@@ -63,7 +62,8 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
 
     let header = data.get_mut(0..offset)?;
     let mut mask_i = 1;
-    for i in 18..(22.min(header.len())) {
+    println!("{:?}", (offset - packet_number_len)..offset);
+    for i in (offset - packet_number_len)..offset {
         header[i] ^= mask[mask_i];
         mask_i += 1;
     }
@@ -82,7 +82,6 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     let frame_type = packet_data[0];
     let offset = packet_data[1];
     let length = (u16::from_be_bytes([packet_data[2], packet_data[3]]) & 0x0fff) as usize;
-    println!("frame_type: {frame_type:02X}, offset: {offset}, length: {length}");
 
     packet_data.drain(0..4);
     Some(QuicPayload {
