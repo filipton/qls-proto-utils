@@ -1,5 +1,5 @@
 use aes::cipher::{BlockEncrypt, KeyInit};
-use aes_gcm::{aead::AeadMutInPlace, Aes128Gcm};
+use aes_gcm::{aead::AeadMutInPlace, Aes128Gcm, Tag};
 use hex_literal::hex;
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -11,6 +11,16 @@ const QUIC_IV: [u8; 17] = hex!("000c0d746c733133207175696320697600");
 const QUIC_HP: [u8; 17] = hex!("00100d746c733133207175696320687000");
 
 #[derive(Debug)]
+pub struct QuicHeader {
+    pub header_form: u8,
+    pub fixed_bit: u8,
+    pub packet_type: u8,
+    pub enc_packet_bits: u8,
+
+    pub version: u32,
+}
+
+#[derive(Debug)]
 pub struct QuicPayload {
     pub frame_type: u64,
     pub offset: usize,
@@ -18,10 +28,20 @@ pub struct QuicPayload {
     pub decoded_data: Vec<u8>,
 }
 
+pub fn parse_quic_header(data: &[u8]) -> Option<QuicHeader> {
+    let f_byte = data.get(0)?;
+    Some(QuicHeader {
+        header_form: (f_byte & 0b10000000) >> 7,
+        fixed_bit: (f_byte & 0b01000000) >> 6,
+        packet_type: (f_byte & 0b00110000) >> 4,
+        enc_packet_bits: f_byte & 0b00001111,
+        version: u32::from_be_bytes(data.get(1..5)?.try_into().ok()?),
+    })
+}
+
 /// Method to parse QUIC packets encoded using well-known secrets from RFC
 /// (primarly Initial packet)
-pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
-    let mut data = data.to_vec();
+pub fn parse_quic_payload(mut header: QuicHeader, data: &mut [u8]) -> Option<QuicPayload> {
     let dest_conn_len = *data.get(5)? as usize;
     let dcid = data.get(6..6 + dest_conn_len)?;
 
@@ -55,28 +75,32 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     cipher.encrypt_block(&mut block);
     let mask = &block[..5];
 
-    data[0] ^= mask[0] & 0x0f;
-    let packet_number_len = (data[0] & 0b00000011) as usize + 1;
+    header.enc_packet_bits ^= mask[0] & 0x0f;
+    let packet_number_len = (header.enc_packet_bits & 0b00000011) as usize + 1;
     offset += packet_number_len; // payload starts here
-    let mut packet_data = Vec::from(&data[offset..]);
 
-    let header = data.get_mut(0..offset)?;
+    let header_bytes = data.get_mut(0..offset)?;
     let mut mask_i = 1;
     for i in (offset - packet_number_len)..offset {
-        header[i] ^= mask[mask_i];
+        header_bytes[i] ^= mask[mask_i];
         mask_i += 1;
     }
 
     let mut i = 0;
     while i < packet_number_len {
-        quic_hp_iv[quic_hp_iv.len() - i - 1] ^= header[header.len() - i - 1];
+        quic_hp_iv[quic_hp_iv.len() - i - 1] ^= header_bytes[header_bytes.len() - i - 1];
         i += 1;
     }
 
+    let (aad, packet_data) = data.split_at_mut(offset);
     let mut cipher = Aes128Gcm::new_from_slice(&quic_hp_key).ok()?;
+
+    let tag_pos = packet_data.len() - 16; // 16 - u16
+    let (msg, tag) = packet_data.split_at_mut(tag_pos);
     cipher
-        .decrypt_in_place(&quic_hp_iv.try_into().ok()?, &header, &mut packet_data)
-        .unwrap();
+        .decrypt_in_place_detached(&quic_hp_iv.try_into().ok()?, aad, msg, Tag::from_slice(tag))
+        .ok()?;
+    println!("\n\nmsg_dec:{msg:02X?}");
 
     let mut packet_offset = 0;
     let (frame_type, len) = read_variable_length_int(&packet_data[packet_offset..]);
@@ -88,12 +112,11 @@ pub fn parse_quic_payload(data: &[u8]) -> Option<QuicPayload> {
     let (length, len) = read_variable_length_int(&packet_data[packet_offset..]);
     packet_offset += len;
 
-    packet_data.drain(0..packet_offset);
     Some(QuicPayload {
         frame_type,
         offset: offset as usize,
         length: length as usize,
-        decoded_data: packet_data,
+        decoded_data: Vec::from(&packet_data[packet_offset..]),
     })
 }
 
