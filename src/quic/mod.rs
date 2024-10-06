@@ -26,6 +26,7 @@ pub struct QuicPayload<'a> {
     pub decoded_data: &'a [u8],
 }
 
+/// Method to parse QUIC header
 pub fn parse_quic_header(data: &[u8]) -> Option<QuicHeader> {
     let f_byte = data.get(0)?;
     Some(QuicHeader {
@@ -38,6 +39,8 @@ pub fn parse_quic_header(data: &[u8]) -> Option<QuicHeader> {
 
 /// Method to parse QUIC packets encoded using well-known secrets from RFC
 /// (primarly Initial packet)
+///
+/// NOTE: This will mutate input data
 pub fn parse_quic_payload<'a>(data: &'a mut [u8]) -> Option<QuicPayload<'a>> {
     let dest_conn_len = *data.get(5)? as usize;
     let dcid = data.get(6..6 + dest_conn_len)?;
@@ -94,7 +97,7 @@ pub fn parse_quic_payload<'a>(data: &'a mut [u8]) -> Option<QuicPayload<'a>> {
     let (aad, packet_data) = data.split_at_mut(offset);
     let mut cipher = Aes128Gcm::new_from_slice(&quic_hp_key).ok()?;
 
-    let tag_pos = packet_data.len() - 16; // 16 - u16
+    let tag_pos = packet_data.len() - 16; // aes128-gcm uses 16byte tag
     let (msg, tag) = packet_data.split_at_mut(tag_pos);
     cipher
         .decrypt_in_place_detached(&quic_hp_iv.try_into().ok()?, aad, msg, Tag::from_slice(tag))
