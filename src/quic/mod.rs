@@ -15,17 +15,15 @@ pub struct QuicHeader {
     pub header_form: u8,
     pub fixed_bit: u8,
     pub packet_type: u8,
-    pub enc_packet_bits: u8,
-
     pub version: u32,
 }
 
 #[derive(Debug)]
-pub struct QuicPayload {
+pub struct QuicPayload<'a> {
     pub frame_type: u64,
     pub offset: usize,
     pub length: usize,
-    pub decoded_data: Vec<u8>,
+    pub decoded_data: &'a [u8],
 }
 
 pub fn parse_quic_header(data: &[u8]) -> Option<QuicHeader> {
@@ -34,14 +32,13 @@ pub fn parse_quic_header(data: &[u8]) -> Option<QuicHeader> {
         header_form: (f_byte & 0b10000000) >> 7,
         fixed_bit: (f_byte & 0b01000000) >> 6,
         packet_type: (f_byte & 0b00110000) >> 4,
-        enc_packet_bits: f_byte & 0b00001111,
         version: u32::from_be_bytes(data.get(1..5)?.try_into().ok()?),
     })
 }
 
 /// Method to parse QUIC packets encoded using well-known secrets from RFC
 /// (primarly Initial packet)
-pub fn parse_quic_payload(mut header: QuicHeader, data: &mut [u8]) -> Option<QuicPayload> {
+pub fn parse_quic_payload<'a>(data: &'a mut [u8]) -> Option<QuicPayload<'a>> {
     let dest_conn_len = *data.get(5)? as usize;
     let dcid = data.get(6..6 + dest_conn_len)?;
 
@@ -69,14 +66,16 @@ pub fn parse_quic_payload(mut header: QuicHeader, data: &mut [u8]) -> Option<Qui
     let mut quic_hp_secret = [0; 16];
     hk.expand(&QUIC_HP, &mut quic_hp_secret).ok()?;
 
-    let cipher = aes::Aes128::new_from_slice(&quic_hp_secret).ok()?;
-    let mut sample = data.get((offset + 4)..(offset + 20))?.to_vec();
+    let mut sample = [0; 16];
+    sample.copy_from_slice(data.get((offset + 4)..(offset + 20))?);
     let mut block = aes::Block::from_mut_slice(&mut sample);
+
+    let cipher = aes::Aes128::new_from_slice(&quic_hp_secret).ok()?;
     cipher.encrypt_block(&mut block);
     let mask = &block[..5];
 
-    header.enc_packet_bits ^= mask[0] & 0x0f;
-    let packet_number_len = (header.enc_packet_bits & 0b00000011) as usize + 1;
+    data[0] ^= mask[0] & 0x0f;
+    let packet_number_len = (data[0] & 0b00000011) as usize + 1;
     offset += packet_number_len; // payload starts here
 
     let header_bytes = data.get_mut(0..offset)?;
@@ -100,7 +99,6 @@ pub fn parse_quic_payload(mut header: QuicHeader, data: &mut [u8]) -> Option<Qui
     cipher
         .decrypt_in_place_detached(&quic_hp_iv.try_into().ok()?, aad, msg, Tag::from_slice(tag))
         .ok()?;
-    println!("\n\nmsg_dec:{msg:02X?}");
 
     let mut packet_offset = 0;
     let (frame_type, len) = read_variable_length_int(&packet_data[packet_offset..]);
@@ -116,7 +114,7 @@ pub fn parse_quic_payload(mut header: QuicHeader, data: &mut [u8]) -> Option<Qui
         frame_type,
         offset: offset as usize,
         length: length as usize,
-        decoded_data: Vec::from(&packet_data[packet_offset..]),
+        decoded_data: &packet_data[packet_offset..],
     })
 }
 

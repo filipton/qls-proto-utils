@@ -1,5 +1,5 @@
 /// Method primary used on TCP packets (using http0.9/1/2 with ssl)
-pub fn parse_sni(buf: &[u8]) -> Option<String> {
+pub fn parse_sni<'a>(buf: &'a [u8]) -> Option<&'a str> {
     // buf[0] - content type
     if *buf.get(0)? != 22 {
         // not handshake
@@ -10,7 +10,7 @@ pub fn parse_sni(buf: &[u8]) -> Option<String> {
 }
 
 /// Inner parse method (primary used on UDP QUIC packets)
-pub fn parse_sni_inner(buf: &[u8]) -> Option<String> {
+pub fn parse_sni_inner<'a>(buf: &'a [u8]) -> Option<&'a str> {
     let handshake_type = *buf.get(0)?; // 1byte
     if handshake_type != 1 {
         return None;
@@ -43,7 +43,7 @@ pub fn parse_sni_inner(buf: &[u8]) -> Option<String> {
             let server_name = core::str::from_utf8(server_name).ok()?;
 
             if server_name_type == 0 {
-                return Some(server_name.to_string());
+                return Some(server_name);
             }
         }
 
